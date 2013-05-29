@@ -1,0 +1,3 @@
+#  coffercli
+
+Client for coffer
