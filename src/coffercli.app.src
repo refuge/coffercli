@@ -1,0 +1,12 @@
+%% -*- tab-width: 4;erlang-indent-level: 4;indent-tabs-mode: nil -*-
+%% ex: ft=erlang ts=4 sw=4 et
+
+{application, coffercli,
+ [
+  {description, "coffer client"},
+  {vsn, "0.1"},
+  {registered, []},
+  {applications, [kernel, stdlib, lager,crypto, public_key, ssl, hackney]},
+  {mod, { coffercli_app, []}},
+  {env, []}
+ ]}.
