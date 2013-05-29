@@ -9,7 +9,8 @@
 
 -export([new_connection/1, new_connection/2,
          close_connection/1,
-         ping/1]).
+         ping/1,
+         containers/1]).
 
 -include("coffercli.hrl").
 
@@ -33,7 +34,6 @@ new_connection(URL) ->
 new_connection(URL, Opts) when is_list(URL) ->
     new_connection(list_to_binary(URL), Opts);
 new_connection(URL, Opts) ->
-    ParsedUrl = hackney_url:parse_url(URL),
     Opts1 = case proplists:get_value(pool, Opts) of
         undefined ->
             PoolOpts = proplists:get_value(pool_opts, Opts, [{pool_size, 10}]),
@@ -43,7 +43,7 @@ new_connection(URL, Opts) ->
         _ ->
             Opts
     end,
-    #coffer_conn{url = ParsedUrl,
+    #coffer_conn{url = URL,
                  options = Opts1,
                  state = active}.
 
@@ -62,3 +62,17 @@ ping(#coffer_conn{url=URL, options=Opts}) ->
         _ ->
             pang
     end.
+
+containers(#coffer_conn{state=closed}) ->
+    {error, closed};
+containers(#coffer_conn{url=URL, options=Opts}) ->
+    URL1 = iolist_to_binary([URL, "/containers"]),
+    case coffercli_util:request(get, URL1, [200], Opts) of
+         {ok, _, _, JsonBin} ->
+            JsonObj = jsx:decode(JsonBin),
+            Containers = proplists:get_value(<<"containers">>, JsonObj),
+            {ok, Containers};
+        Error ->
+            Error
+    end.
+
