@@ -10,7 +10,9 @@
 -export([new_connection/1, new_connection/2,
          close_connection/1,
          ping/1,
-         containers/1]).
+         storages/1,
+         storage/2,
+         new_blob/2, store/2]).
 
 -include("coffercli.hrl").
 
@@ -63,9 +65,9 @@ ping(#coffer_conn{url=URL, options=Opts}) ->
             pang
     end.
 
-containers(#coffer_conn{state=closed}) ->
+storages(#coffer_conn{state=closed}) ->
     {error, closed};
-containers(#coffer_conn{url=URL, options=Opts}) ->
+storages(#coffer_conn{url=URL, options=Opts}) ->
     URL1 = iolist_to_binary([URL, "/containers"]),
     case coffercli_util:request(get, URL1, [200], Opts) of
          {ok, _, _, JsonBin} ->
@@ -76,3 +78,58 @@ containers(#coffer_conn{url=URL, options=Opts}) ->
             Error
     end.
 
+storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
+    StorageURL = iolist_to_binary([URL, "/", Name]),
+    #remote_storage{conn = Conn,
+                    conn_options = Opts,
+                    url = StorageURL,
+                    name = Name}.
+
+new_blob(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
+    case coffercli_util:validate_ref(BlobRef) of
+        ok ->
+            URL1 = iolist_to_binary([URL, "/", BlobRef]),
+            Headers = [{<<"Content-Type">>, <<"data/octet-stream">>},
+                       {<<"Transfer-Encoding">>, <<"chunked">>}],
+            lager:info("create ~p on ~p~n", [BlobRef, URL1]),
+            hackney:request(put, URL1, Headers, stream, Opts);
+        error ->
+            {error, invalid_blobref}
+    end.
+
+store(eob, Client) ->
+    {ok, Client1} = hackney:end_stream_request_body(Client),
+    case hackney:start_response(Client1) of
+        {ok, 201, _Headers, Client2} ->
+            {ok, JsonBin, _} = hackney:body(Client2),
+            JsonObj = jsx:decode(JsonBin),
+            lager:info("got ~p~n", [JsonObj]),
+            [Received] = proplists:get_value(<<"received">>, JsonObj),
+            {ok, parse_blob_info(Received)};
+
+        {ok, Status, Headers, Client2} ->
+            {ok, RespBody, _} = hackney:body(Client2),
+            case Status of
+                405 ->
+                    {error, method_not_allowed};
+                404 ->
+                    {error, not_found};
+                _ ->
+                    {error, {http_error, Status, Headers,
+                             RespBody}}
+            end;
+        Error ->
+            Error
+    end;
+store(Data, Client) ->
+    case hackney:stream_request_body(Data, Client) of
+        {ok, Client1} ->
+            {ok, Client1};
+        Error ->
+            Error
+    end.
+
+parse_blob_info(Received) ->
+    BlobRef = proplists:get_value(<<"blobref">>, Received),
+    Size = proplists:get_value(<<"size">>, Received),
+    {BlobRef, Size}.
