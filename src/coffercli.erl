@@ -10,7 +10,10 @@
 -export([new_connection/1, new_connection/2,
          close_connection/1,
          ping/1,
-         containers/1]).
+         storages/1,
+         storage/2,
+         upload/2, upload/3,
+         send_blob_part/2]).
 
 -include("coffercli.hrl").
 
@@ -63,9 +66,9 @@ ping(#coffer_conn{url=URL, options=Opts}) ->
             pang
     end.
 
-containers(#coffer_conn{state=closed}) ->
+storages(#coffer_conn{state=closed}) ->
     {error, closed};
-containers(#coffer_conn{url=URL, options=Opts}) ->
+storages(#coffer_conn{url=URL, options=Opts}) ->
     URL1 = iolist_to_binary([URL, "/containers"]),
     case coffercli_util:request(get, URL1, [200], Opts) of
          {ok, _, _, JsonBin} ->
@@ -76,3 +79,90 @@ containers(#coffer_conn{url=URL, options=Opts}) ->
             Error
     end.
 
+storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
+    StorageURL = iolist_to_binary([URL, "/", Name]),
+    #remote_storage{conn = Conn,
+                    conn_options = Opts,
+                    url = StorageURL,
+                    name = Name}.
+
+upload(Storage, Bin) when is_binary(Bin) ->
+    {ok, BlobRef} = coffercli_util:hash(Bin),
+    lager:info("blobref: ~p~n", [BlobRef]),
+    upload(Storage, BlobRef, Bin);
+upload(Storage, {file, _Name}=File) ->
+    case coffercli_util:hash(File) of
+        {ok, BlobRef} ->
+            upload(Storage, BlobRef, File);
+        Error ->
+            Error
+    end;
+upload(Storage, {stream, BlobRef}) ->
+    upload(Storage, BlobRef, stream);
+upload(Storage, {BlobRef, Bin}) ->
+    upload(Storage, BlobRef, Bin).
+
+
+upload(#remote_storage{url=URL, conn_options=Opts}, BlobRef, Blob) ->
+    case coffercli_util:validate_ref(BlobRef) of
+        ok ->
+            URL1 = iolist_to_binary([URL, "/", BlobRef]),
+            Headers = [{<<"Content-Type">>, <<"data/octet-stream">>},
+                       {<<"Transfer-Encoding">>, <<"chunked">>}],
+            lager:info("create ~p on ~p~n", [BlobRef, URL1]),
+
+            case Blob of
+                stream ->
+                    hackney:request(put, URL1, Headers, stream, Opts);
+                _ ->
+                    case coffercli_util:request(put, URL1, [201], Opts,
+                                                Headers, Blob) of
+                        {ok, _, _, JsonBin} ->
+                            JsonObj = jsx:decode(JsonBin),
+                            [Received] = proplists:get_value(<<"received">>,
+                                                             JsonObj),
+                            {ok, parse_blob_info(Received)};
+                        Error ->
+                            Error
+                    end
+            end;
+        error ->
+            {error, invalid_blobref}
+    end.
+
+send_blob_part(Client, eob) ->
+    case hackney:start_response(Client) of
+        {ok, 201, _Headers, Client1} ->
+            {ok, JsonBin, _} = hackney:body(Client1),
+            JsonObj = jsx:decode(JsonBin),
+            [Received] = proplists:get_value(<<"received">>, JsonObj),
+            {ok, parse_blob_info(Received)};
+
+        {ok, Status, Headers, Client1} ->
+            {ok, RespBody, _} = hackney:body(Client1),
+            case Status of
+                405 ->
+                    {error, method_not_allowed};
+                404 ->
+                    {error, not_found};
+                409 ->
+                    {error, already_exists};
+                _ ->
+                    {error, {http_error, Status, Headers,
+                             RespBody}}
+            end;
+        Error ->
+            Error
+    end;
+send_blob_part(Client, Data) ->
+    case hackney:stream_request_body(Data, Client) of
+        {ok, Client1} ->
+            {ok, Client1};
+        Error ->
+            Error
+    end.
+
+parse_blob_info(Received) ->
+    BlobRef = proplists:get_value(<<"blobref">>, Received),
+    Size = proplists:get_value(<<"size">>, Received),
+    {BlobRef, Size}.

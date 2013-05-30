@@ -6,3 +6,8 @@
 -record(coffer_conn, {url,
                       options,
                       state}).
+
+-record(remote_storage, {conn,
+                         conn_options,
+                         url,
+                         name}).
