@@ -98,17 +98,16 @@ new_blob(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
     end.
 
 store(eob, Client) ->
-    {ok, Client1} = hackney:end_stream_request_body(Client),
-    case hackney:start_response(Client1) of
-        {ok, 201, _Headers, Client2} ->
-            {ok, JsonBin, _} = hackney:body(Client2),
+    case hackney:start_response(Client) of
+        {ok, 201, _Headers, Client1} ->
+            {ok, JsonBin, _} = hackney:body(Client1),
             JsonObj = jsx:decode(JsonBin),
             lager:info("got ~p~n", [JsonObj]),
             [Received] = proplists:get_value(<<"received">>, JsonObj),
             {ok, parse_blob_info(Received)};
 
-        {ok, Status, Headers, Client2} ->
-            {ok, RespBody, _} = hackney:body(Client2),
+        {ok, Status, Headers, Client1} ->
+            {ok, RespBody, _} = hackney:body(Client1),
             case Status of
                 405 ->
                     {error, method_not_allowed};
