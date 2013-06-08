@@ -12,7 +12,8 @@
          ping/1,
          storages/1,
          storage/2,
-         new_blob/2, store/2]).
+         upload/2, upload/3,
+         send_blob_part/2]).
 
 -include("coffercli.hrl").
 
@@ -85,24 +86,55 @@ storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
                     url = StorageURL,
                     name = Name}.
 
-new_blob(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
+upload(Storage, Bin) when is_binary(Bin) ->
+    {ok, BlobRef} = coffercli_util:hash(Bin),
+    lager:info("blobref: ~p~n", [BlobRef]),
+    upload(Storage, BlobRef, Bin);
+upload(Storage, {file, _Name}=File) ->
+    case coffercli_util:hash(File) of
+        {ok, BlobRef} ->
+            upload(Storage, BlobRef, File);
+        Error ->
+            Error
+    end;
+upload(Storage, {stream, BlobRef}) ->
+    upload(Storage, BlobRef, stream);
+upload(Storage, {BlobRef, Bin}) ->
+    upload(Storage, BlobRef, Bin).
+
+
+upload(#remote_storage{url=URL, conn_options=Opts}, BlobRef, Blob) ->
     case coffercli_util:validate_ref(BlobRef) of
         ok ->
             URL1 = iolist_to_binary([URL, "/", BlobRef]),
             Headers = [{<<"Content-Type">>, <<"data/octet-stream">>},
                        {<<"Transfer-Encoding">>, <<"chunked">>}],
             lager:info("create ~p on ~p~n", [BlobRef, URL1]),
-            hackney:request(put, URL1, Headers, stream, Opts);
+
+            case Blob of
+                stream ->
+                    hackney:request(put, URL1, Headers, stream, Opts);
+                _ ->
+                    case coffercli_util:request(put, URL1, [201], Opts,
+                                                Headers, Blob) of
+                        {ok, _, _, JsonBin} ->
+                            JsonObj = jsx:decode(JsonBin),
+                            [Received] = proplists:get_value(<<"received">>,
+                                                             JsonObj),
+                            {ok, parse_blob_info(Received)};
+                        Error ->
+                            Error
+                    end
+            end;
         error ->
             {error, invalid_blobref}
     end.
 
-store(eob, Client) ->
+send_blob_part(Client, eob) ->
     case hackney:start_response(Client) of
         {ok, 201, _Headers, Client1} ->
             {ok, JsonBin, _} = hackney:body(Client1),
             JsonObj = jsx:decode(JsonBin),
-            lager:info("got ~p~n", [JsonObj]),
             [Received] = proplists:get_value(<<"received">>, JsonObj),
             {ok, parse_blob_info(Received)};
 
@@ -113,6 +145,8 @@ store(eob, Client) ->
                     {error, method_not_allowed};
                 404 ->
                     {error, not_found};
+                409 ->
+                    {error, already_exists};
                 _ ->
                     {error, {http_error, Status, Headers,
                              RespBody}}
@@ -120,7 +154,7 @@ store(eob, Client) ->
         Error ->
             Error
     end;
-store(Data, Client) ->
+send_blob_part(Client, Data) ->
     case hackney:stream_request_body(Data, Client) of
         {ok, Client1} ->
             {ok, Client1};

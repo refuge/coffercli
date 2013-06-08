@@ -7,6 +7,9 @@
 
 -export([request/4, request/5, request/6]).
 -export([validate_ref/1]).
+-export([hash/1]).
+
+-define(BLOCKSIZE, 32768).
 
 request(Method, Url, Expect, Options) ->
     request(Method, Url, Expect, Options, [], []).
@@ -26,6 +29,8 @@ request(Method, Url, Expect, Options, Headers, Body) ->
                             {error, method_not_allowed};
                         404 ->
                             {error, not_found};
+                        409 ->
+                            {error, already_exists};
                         _ ->
                             {error, {http_error, Status, RespHeaders,
                                      RespBody}}
@@ -54,3 +59,31 @@ get_blob_regexp() ->
         RegExp ->
             RegExp
     end.
+
+
+hash({file, File}) ->
+    case file:open(File, [binary,raw,read]) of
+        {ok, P} ->
+            loop(P, crypto:sha_init());
+        Error ->
+            Error
+    end;
+hash(Bin) when is_binary(Bin)->
+    Hash = hexdigest(crypto:sha(Bin)),
+    {ok, << "sha1-", Hash/binary >>}.
+
+loop (P, C) ->
+    case file:read(P, ?BLOCKSIZE) of
+        {ok, Bin} ->
+            loop(P, crypto:sha_update(C, Bin));
+        eof ->
+            file:close(P),
+            Hash = hexdigest(crypto:sha_final(C)),
+            {ok, << "sha1-", Hash/binary >>};
+        Error ->
+            Error
+    end.
+
+hexdigest(Hash) ->
+    iolist_to_binary([io_lib:format("~.16b",[N]) || N
+                                                 <-binary_to_list(Hash)]).
