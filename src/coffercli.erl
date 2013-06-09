@@ -25,6 +25,22 @@
 
 -compile([{parse_transform, hackney_transform}]).
 
+-type url() :: binary() | string().
+-export_type([url/0]).
+
+-type conn_opts() :: [any()].
+-export_type([conn_opts/0]).
+
+-type blobref() :: binary().
+
+-opaque connection() :: #coffer_conn{}.
+-opaque storage() :: #remote_storage{}.
+-opaque upload() :: #mupload{}.
+
+-export_type([connection/0,
+              storage/0,
+              upload/0]).
+
 %% @doc Start the coffer application. Useful when testing using the shell.
 start() ->
     coffercli_deps:ensure(),
@@ -36,10 +52,48 @@ start() ->
 stop() ->
     application:stop(coffercli).
 
-
+%% @doc create a new connection to connect to a coffer server
+-spec new_connection(URL :: url()) -> Connection :: connection().
 new_connection(URL) ->
     new_connection(URL, []).
 
+%% @doc create a new connection to connect to a coffer server
+%% Args:
+%% <ul>
+%% <li><strong>URL</strong>: URL ro connect</li>
+%%  <li><strong>Options:</strong> `[{connect_options, connect_options(),
+%%  {ssl_options, ssl_options()}, Others]'</li>
+%%      <li>`connect_options()': The default connect_options are
+%%      `[binary, {active, false}, {packet, raw}])' . Vor valid options
+%%      see the gen_tcp options.</li>
+%%
+%%      <li>`ssl_options()': See the ssl options from the ssl
+%%      module.</li>
+%%
+%%      <li><em>Others options are</em>:
+%%      <ul>
+%%          <li>{proxy, proxy_options()}: to connect via a proxy.</li>
+%%          <li>insecure: to perform "insecure" SSL connections and
+%%          transfers without checking the certificate</li>
+%%          <li>{connect_timeout, infinity | integer()}: timeout used when
+%%          estabilishing a connection, in milliseconds. Default is 8000</li>
+%%          <li>{recv_timeout, infinity | integer()}: timeout used when
+%%          receiving a connection. Default is infinity</li>
+%%      </ul>
+%%
+%%      </li>
+%%
+%%      <li>`proxy_options()':  options to connect by a proxy:
+%%      <p><ul>
+%%          <li>binary(): url to use for the proxy. Used for basic HTTP
+%%          proxy</li>
+%%          <li>{Host::binary(), Port::binary}: Host and port to connect,
+%%          for HTTP proxy</li>
+%%      </ul></p>
+%%      </li>
+%%  </ul>
+-spec new_connection(URL :: url(), Options :: conn_opts())
+    -> Connection :: connection().
 new_connection(URL, Opts) when is_list(URL) ->
     new_connection(list_to_binary(URL), Opts);
 new_connection(URL, Opts) ->
@@ -56,11 +110,15 @@ new_connection(URL, Opts) ->
                  options = Opts1,
                  state = active}.
 
+%% @doc close a connection, close all the opened connections
+-spec close_connection(Connection :: connection()) -> ok.
 close_connection(#coffer_conn{options=Opts}) ->
     Pool = proplists:get_value(pool, Opts),
     hackney:stop_pool(Pool).
 
 
+%% @doc ping a coffer instance to make sure it's alive
+-spec ping(Connection :: connection()) -> pong | pang.
 ping(#coffer_conn{state=closed}) ->
     {error, closed};
 ping(#coffer_conn{url=URL, options=Opts}) ->
@@ -72,6 +130,9 @@ ping(#coffer_conn{url=URL, options=Opts}) ->
             pang
     end.
 
+%% @doc get the list of storages in a coffer server instance
+-spec storages(Connection :: connection()) ->
+    {ok, [StorageName :: binary()]} | {error, term()}.
 storages(#coffer_conn{state=closed}) ->
     {error, closed};
 storages(#coffer_conn{url=URL, options=Opts}) ->
@@ -85,6 +146,10 @@ storages(#coffer_conn{url=URL, options=Opts}) ->
             Error
     end.
 
+%% @doc create a storage context, This context will be used in storage
+%% related functions.
+-spec storage(Connection :: connection(), Name :: binary() | string())
+    -> Storage :: storage().
 storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
     StorageURL = iolist_to_binary([URL, "/", Name]),
     #remote_storage{conn = Conn,
@@ -92,6 +157,11 @@ storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
                     url = StorageURL,
                     name = Name}.
 
+%% @doc upload a single BLOB using the standalone API
+-spec upload(Storage :: storage(),
+             binary() | {file, binary()}
+             | {stream, blobref()}
+             | {blobref(), iolist()}) -> {ok, any()} | {error, any()}.
 upload(Storage, Bin) when is_binary(Bin) ->
     {ok, BlobRef} = coffercli_util:hash(Bin),
     upload(Storage, BlobRef, Bin);
@@ -107,7 +177,10 @@ upload(Storage, {stream, BlobRef}) ->
 upload(Storage, {BlobRef, Bin}) ->
     upload(Storage, BlobRef, Bin).
 
-
+%% @doc upload a single BLOB using the standalone API
+-spec upload(Storage :: storage(),
+             BlobRef :: blobref(),
+             iolist() | {file, binary()})-> {ok, any()} | {error, any()}.
 upload(#remote_storage{url=URL, conn_options=Opts}, BlobRef, Blob) ->
     case coffercli_util:validate_ref(BlobRef) of
         ok ->
@@ -133,6 +206,9 @@ upload(#remote_storage{url=URL, conn_options=Opts}, BlobRef, Blob) ->
             {error, invalid_blobref}
     end.
 
+
+%% @doc when the ``stream`` is passed to the upload function, this
+%% function can be used to stream BLOB chunks one by one.
 send_blob_part(Client, eob) ->
     case hackney:start_response(Client) of
         {ok, 201, _Headers, Client1} ->
@@ -155,6 +231,9 @@ send_blob_part(Client, Data) ->
             Error
     end.
 
+%% @doc initialize a multipart request to send multiple blobs at once
+-spec bulk_upload_init(Storage :: storage())
+    -> UploadContext :: upload().
 bulk_upload_init(#remote_storage{url=URL, conn_options=Opts}) ->
     case hackney:request(post, URL, [], stream_multipart, Opts) of
         {ok, Client} ->
@@ -163,6 +242,17 @@ bulk_upload_init(#remote_storage{url=URL, conn_options=Opts}) ->
             Error
     end.
 
+
+%% @doc send blobs using the multipart api. Blobs are streamed to the
+%% coffer instance
+%% See the bulk upload example for more info.
+-spec bulk_upload_send(UploadContext :: upload(),
+                       binary() | iolist()
+                       | {file, binary()}
+                       | {stream, blobref()}
+                       | eob)
+    -> {ok, NewUploadContext :: upload()}
+    | {error, term()}.
 bulk_upload_send(#mupload{client=Client, stream=false}=Upload, Bin)
         when is_binary(Bin) ->
     {ok, BlobRef} = coffercli_util:hash(Bin),
@@ -219,6 +309,9 @@ bulk_upload_send(#mupload{stream=true}, _) ->
 bulk_upload_send(_, _) ->
     {error, badarg}.
 
+%% @doc finalize the multipart upload and return results
+-spec bulk_upload_final(NewUploadContext :: upload())
+    -> {ok, any()} | {error, term()}.
 bulk_upload_final(#mupload{stream=true}) ->
     {error, open_stream};
 bulk_upload_final(#mupload{client=Client}) ->
@@ -235,6 +328,7 @@ bulk_upload_final(#mupload{client=Client}) ->
         Error ->
             Error
     end.
+
 
 parse_blob_info(Received) ->
     BlobRef = proplists:get_value(<<"blobref">>, Received),
