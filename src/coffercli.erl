@@ -140,17 +140,7 @@ send_blob_part(Client, eob) ->
 
         {ok, Status, Headers, Client1} ->
             {ok, RespBody, _} = hackney:body(Client1),
-            case Status of
-                405 ->
-                    {error, method_not_allowed};
-                404 ->
-                    {error, not_found};
-                409 ->
-                    {error, already_exists};
-                _ ->
-                    {error, {http_error, Status, Headers,
-                             RespBody}}
-            end;
+            coffercli_util:handle_error(Status, Headers, RespBody);
         Error ->
             Error
     end;
