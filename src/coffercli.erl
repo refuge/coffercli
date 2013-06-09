@@ -13,9 +13,15 @@
          storages/1,
          storage/2,
          upload/2, upload/3,
-         send_blob_part/2]).
+         send_blob_part/2,
+         bulk_upload_init/1,
+         bulk_upload_send/2,
+         bulk_upload_final/1]).
 
 -include("coffercli.hrl").
+
+-record(mupload, {client,
+                  stream = false}).
 
 -compile([{parse_transform, hackney_transform}]).
 
@@ -88,7 +94,6 @@ storage(#coffer_conn{url=URL, options=Opts}=Conn, Name) ->
 
 upload(Storage, Bin) when is_binary(Bin) ->
     {ok, BlobRef} = coffercli_util:hash(Bin),
-    lager:info("blobref: ~p~n", [BlobRef]),
     upload(Storage, BlobRef, Bin);
 upload(Storage, {file, _Name}=File) ->
     case coffercli_util:hash(File) of
@@ -148,6 +153,89 @@ send_blob_part(Client, Data) ->
     case hackney:stream_request_body(Data, Client) of
         {ok, Client1} ->
             {ok, Client1};
+        Error ->
+            Error
+    end.
+
+
+bulk_upload_init(#remote_storage{url=URL, conn_options=Opts}) ->
+    case hackney:request(post, URL, [], stream_multipart, Opts) of
+        {ok, Client} ->
+            {ok, #mupload{client=Client}};
+        Error ->
+            Error
+    end.
+
+bulk_upload_send(#mupload{client=Client, stream=false}=Upload, Bin)
+        when is_binary(Bin) ->
+    {ok, BlobRef} = coffercli_util:hash(Bin),
+    case hackney:stream_multipart_request({BlobRef, Bin}, Client) of
+        {ok, Client1} ->
+            {ok, Upload#mupload{client=Client1}};
+        Error ->
+            Error
+    end;
+bulk_upload_send(#mupload{client=Client, stream=true}=Upload, Bin)
+        when is_binary(Bin) ->
+
+    case hackney:stream_multipart_request({data, Bin}, Client) of
+        {ok, Client1} ->
+            {ok, Upload#mupload{client=Client1}};
+        Error ->
+            Error
+    end;
+bulk_upload_send(#mupload{client=Client, stream=true}=Upload, eob) ->
+
+    case hackney:stream_multipart_request({data, eof}, Client) of
+        {ok, Client1} ->
+            {ok, Upload#mupload{client=Client1, stream=false}};
+        Error ->
+            Error
+    end;
+bulk_upload_send(#mupload{client=Client, stream=false}=Upload,
+                 {stream, BlobRef}) ->
+    case hackney:stream_multipart_request({data,
+                                           {start, BlobRef, BlobRef,
+                                            <<"application/octet-stream">>}},
+                                         Client) of
+        {ok, Client1} ->
+            {ok, Upload#mupload{client=Client1, stream=true}};
+        Error ->
+            Error
+    end;
+bulk_upload_send(#mupload{client=Client, stream=false}=Upload,
+                 {file, _Name}=File) ->
+
+    case coffercli_util:hash(File) of
+        {ok, BlobRef} ->
+             case hackney:stream_multipart_request({BlobRef, File},
+                                                   Client) of
+                {ok, Client1} ->
+                    {ok, Upload#mupload{client=Client1}};
+                Error ->
+                    Error
+            end;
+        Error ->
+            Error
+    end;
+bulk_upload_send(#mupload{stream=true}, _) ->
+    {error, open_stream};
+bulk_upload_send(_, _) ->
+    {error, badarg}.
+
+bulk_upload_final(#mupload{stream=true}) ->
+    {error, open_stream};
+bulk_upload_final(#mupload{client=Client}) ->
+    case hackney:start_response(Client) of
+        {ok, 201, _Headers, Client1} ->
+            {ok, JsonBin, _} = hackney:body(Client1),
+            JsonObj = jsx:decode(JsonBin),
+            Received = proplists:get_value(<<"received">>, JsonObj, []),
+            Errors = proplists:get_value(<<"errors">>, JsonObj, []),
+            {ok, {parse_blob_info(Received), Errors}};
+        {ok, Status, Headers, Client1} ->
+            {ok, RespBody, _} = hackney:body(Client1),
+            coffercli_util:handle_error(Status, Headers, RespBody);
         Error ->
             Error
     end.
