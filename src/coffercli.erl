@@ -411,9 +411,7 @@ enumerate(#remote_storage{url=URL, conn_options=Opts}) ->
     case coffercli_util:request(get, URL, [200], Opts) of
         {ok, _, _, JsonBin} ->
             JsonObj = jsx:decode(JsonBin),
-            Container = proplists:get_value(<<"container">>, JsonObj,
-                                            []),
-            Blobs = proplists:get_value(<<"blobs">>, Container, []),
+            Blobs = proplists:get_value(<<"blobs">>, JsonObj, []),
             [parse_blob_info(Info) || Info <- Blobs];
         Error ->
             Error
