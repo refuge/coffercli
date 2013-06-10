@@ -14,7 +14,10 @@
          storage/2,
          upload/2, upload/3, send_blob_part/2,
          bulk_upload_init/1, bulk_upload_send/2, bulk_upload_final/1,
-         fetch_init/2, fetch/1, fetch_all/2]).
+         fetch_init/2, fetch/1, fetch_all/2,
+         delete/2,
+         enumerate/1,
+         stat/2]).
 
 -include("coffercli.hrl").
 
@@ -30,6 +33,14 @@
 -export_type([conn_opts/0]).
 
 -type blobref() :: binary().
+-type blobrefs() :: [blobref()].
+
+-export_type([blobref/0, blobrefs/0]).
+
+-type blob_info() :: {blobref(), integer()}.
+-type blob_infos() :: [blob_info()].
+
+-export_type([blob_info/0, blob_infos/0]).
 
 -opaque connection() :: #coffer_conn{}.
 -opaque storage() :: #remote_storage{}.
@@ -382,6 +393,57 @@ fetch_all(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
             Error
     end.
 
+%% @doc delete a blob
+-spec delete(Storage :: storage(), BlobRef :: blobref()) ->
+    ok | {error, term()}.
+delete(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
+    URL1 = iolist_to_binary([URL, "/", BlobRef]),
+    case coffercli_util:request(delete, URL1, [202], Opts) of
+        {ok, _, _, _} ->
+            ok;
+        Error ->
+            Error
+    end.
+
+%% @doc get list of all blobs
+-spec enumerate(Storage :: storage()) -> blob_infos() | {error, term()}.
+enumerate(#remote_storage{url=URL, conn_options=Opts}) ->
+    case coffercli_util:request(get, URL, [200], Opts) of
+        {ok, _, _, JsonBin} ->
+            JsonObj = jsx:decode(JsonBin),
+            Container = proplists:get_value(<<"container">>, JsonObj,
+                                            []),
+            Blobs = proplists:get_value(<<"blobs">>, Container, []),
+            [parse_blob_info(Info) || Info <- Blobs];
+        Error ->
+            Error
+    end.
+
+%% @doc test if some blobs has been uploaded or partially uploaded.
+-spec stat(Storage :: storage(), Blobrefs :: blobrefs()) ->
+    {ok, Found :: blob_infos(), HavePartially :: blob_infos()}
+    | {error, term()}.
+stat(#remote_storage{url=URL, conn_options=Opts}, BlobRefs) ->
+    URL1 = iolist_to_binary([URL, "/stat"]),
+    {_, Form} = lists:foldr(fun(BlobRef, {Inc, Acc}) ->
+                    Key = iolist_to_binary([<<"blob">>,
+                                            integer_to_list(Inc)]),
+                    {Inc+1, [{Key, BlobRef} | Acc]}
+            end, {0, []}, BlobRefs),
+    case coffercli_util:request(post, URL1, [200], Opts, [],
+                                {form, Form}) of
+        {ok, _, _, JsonBin} ->
+            JsonObj = jsx:decode(JsonBin),
+            Stat = proplists:get_value(<<"stat">>, JsonObj, []),
+            Partials = proplists:get_value(<<"alreadyHavePartially">>,
+                                           JsonObj, []),
+            {ok, Stat, Partials};
+        Error ->
+            Error
+    end.
+
+
+%% internals
 
 parse_blob_info(Received) ->
     BlobRef = proplists:get_value(<<"blobref">>, Received),
