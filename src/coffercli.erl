@@ -12,11 +12,9 @@
          ping/1,
          storages/1,
          storage/2,
-         upload/2, upload/3,
-         send_blob_part/2,
-         bulk_upload_init/1,
-         bulk_upload_send/2,
-         bulk_upload_final/1]).
+         upload/2, upload/3, send_blob_part/2,
+         bulk_upload_init/1, bulk_upload_send/2, bulk_upload_final/1,
+         fetch_init/2, fetch/1, fetch_all/2]).
 
 -include("coffercli.hrl").
 
@@ -36,10 +34,12 @@
 -opaque connection() :: #coffer_conn{}.
 -opaque storage() :: #remote_storage{}.
 -opaque upload() :: #mupload{}.
+-opaque fetcher() :: hackney:client().
 
 -export_type([connection/0,
               storage/0,
-              upload/0]).
+              upload/0,
+              fetcher/0]).
 
 %% @doc Start the coffer application. Useful when testing using the shell.
 start() ->
@@ -322,6 +322,60 @@ bulk_upload_final(#mupload{client=Client}) ->
             Received = proplists:get_value(<<"received">>, JsonObj, []),
             Errors = proplists:get_value(<<"errors">>, JsonObj, []),
             {ok, {[parse_blob_info(R) || R <- Received], Errors}};
+        {ok, Status, Headers, Client1} ->
+            {ok, RespBody, _} = hackney:body(Client1),
+            coffercli_util:handle_error(Status, Headers, RespBody);
+        Error ->
+            Error
+    end.
+
+%% @doc initialize a stream to return a blob
+-spec fetch_init(Storage :: storage(), Blobref :: blobref())
+    -> Fetcher :: fetcher() | {error, term()}.
+fetch_init(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
+    URL1 = iolist_to_binary([URL, "/", BlobRef]),
+    case hackney:request(get, URL1, [], <<>>, Opts) of
+        {ok, 200, _Headers, Client} ->
+            {ok, Client};
+        {ok, Status, Headers, Client1} ->
+            {ok, RespBody, _} = hackney:body(Client1),
+            coffercli_util:handle_error(Status, Headers, RespBody);
+        Error ->
+            Error
+    end.
+
+%% @doc fetch a BLOB chunk
+-spec fetch(Fetcher :: fetcher()) ->
+    {ok, Data :: binary(), NewFetcher :: fetcher()}
+    | eob | {error, term()}.
+fetch(Fetcher) ->
+    case hackney:stream_body(Fetcher) of
+        {ok, Data, Fetcher1} ->
+            {ok, Data, Fetcher1};
+        {done, Fetcher1} ->
+            % release the socket
+            hackney:close(Fetcher1),
+            eob;
+        Error ->
+            Error
+    end.
+
+%% @doc fetch all chunks from a Blob in memory
+-spec fetch_all(Storage :: storage(), BlobRef :: blobref()) ->
+    {ok, Data :: binary()} | {error, term()}.
+fetch_all(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
+    URL1 = iolist_to_binary([URL, "/", BlobRef]),
+    lager:info("fetch ~p~n", [URL1]),
+    case hackney:request(get, URL1, [], <<>>, Opts) of
+        {ok, 200, _Headers, Client} ->
+            case hackney:body(Client) of
+                {ok, Data, Client1} ->
+                    % release the socket
+                    hackney:close(Client1),
+                    {ok, Data};
+                Error ->
+                    Error
+            end;
         {ok, Status, Headers, Client1} ->
             {ok, RespBody, _} = hackney:body(Client1),
             coffercli_util:handle_error(Status, Headers, RespBody);
