@@ -365,7 +365,6 @@ fetch(Fetcher) ->
     {ok, Data :: binary()} | {error, term()}.
 fetch_all(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
     URL1 = iolist_to_binary([URL, "/", BlobRef]),
-    lager:info("fetch ~p~n", [URL1]),
     case hackney:request(get, URL1, [], <<>>, Opts) of
         {ok, 200, _Headers, Client} ->
             case hackney:body(Client) of
