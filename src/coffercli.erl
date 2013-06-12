@@ -16,13 +16,17 @@
          bulk_upload_init/1, bulk_upload_send/2, bulk_upload_final/1,
          fetch_init/2, fetch/1, fetch_all/2,
          delete/2,
-         enumerate/1,
+         enumerate_init/1, enumerate/1, enumerate_stop/1,
+         enumerate_all/1,
          stat/2]).
 
 -include("coffercli.hrl").
 
 -record(mupload, {client,
                   stream = false}).
+
+-record(enumerate_reader, {client,
+                           buffer = <<>>}).
 
 -compile([{parse_transform, hackney_transform}]).
 
@@ -46,11 +50,13 @@
 -opaque storage() :: #remote_storage{}.
 -opaque upload() :: #mupload{}.
 -opaque fetcher() :: hackney:client().
+-opaque enumerate_reader() :: #enumerate_reader{}.
 
 -export_type([connection/0,
               storage/0,
               upload/0,
-              fetcher/0]).
+              fetcher/0,
+              enumerate_reader/0]).
 
 %% @doc Start the coffer application. Useful when testing using the shell.
 start() ->
@@ -405,9 +411,41 @@ delete(#remote_storage{url=URL, conn_options=Opts}, BlobRef) ->
             Error
     end.
 
+
+%% start a stream to enumerate blobs on a coffer instance
+-spec enumerate_init(Storage :: storage())
+    -> {ok, enumerate_reader()} | {error, term()}.
+enumerate_init(#remote_storage{url=URL, conn_options=Opts}) ->
+    case hackney:request(get, URL, [], <<>>, Opts) of
+        {ok, 200, _, Client} ->
+            {ok, #enumerate_reader{client=Client}};
+        Error ->
+            Error
+    end.
+
+%% enumerate a blob info
+-spec enumerate(Reader :: enumerate_reader())
+    -> {ok, BlobInfo :: blob_info(), NewReader :: enumerate_reader()}
+    | done | {error, term()}.
+enumerate(#enumerate_reader{buffer = <<>>}=Reader) ->
+    enumerate_more(Reader);
+enumerate(#enumerate_reader{buffer=Buffer}=Reader) ->
+    case parse_enumerate_result(Buffer) of
+        {ok,  BlobInfo, Rest} ->
+            {ok, BlobInfo, Reader#enumerate_reader{buffer=Rest}};
+        more ->
+            enumerate_more(Reader)
+    end.
+
+%% @doc stop to enumerate
+-spec enumerate_stop(Reader :: enumerate_reader()) -> ok.
+enumerate_stop(#enumerate_reader{client=Client}) ->
+    hackney:close(Client),
+    ok.
+
 %% @doc get list of all blobs
--spec enumerate(Storage :: storage()) -> blob_infos() | {error, term()}.
-enumerate(#remote_storage{url=URL, conn_options=Opts}) ->
+-spec enumerate_all(Storage :: storage()) -> blob_infos() | {error, term()}.
+enumerate_all(#remote_storage{url=URL, conn_options=Opts}) ->
     case coffercli_util:request(get, URL, [200], Opts) of
         {ok, _, _, JsonBin} ->
             JsonObj = jsx:decode(JsonBin),
@@ -416,6 +454,7 @@ enumerate(#remote_storage{url=URL, conn_options=Opts}) ->
         Error ->
             Error
     end.
+
 
 %% @doc test if some blobs has been uploaded or partially uploaded.
 -spec stat(Storage :: storage(), Blobrefs :: blobrefs()) ->
@@ -447,3 +486,36 @@ parse_blob_info(Received) ->
     BlobRef = proplists:get_value(<<"blobref">>, Received),
     Size = proplists:get_value(<<"size">>, Received),
     {BlobRef, Size}.
+
+parse_enumerate_result(<<>>) ->
+    more;
+parse_enumerate_result(Data) ->
+    case binary:split(Data, <<"\n">>) of
+        [<<"{\"blobs\": [" >>, Rest] ->
+            parse_enumerate_result(Rest);
+        [<<>>, Rest] ->
+            parse_enumerate_result(Rest);
+        [Line, Rest] ->
+            Len = byte_size(Line) - 1,
+            << JsonBin:Len/binary, _/binary >> = Line,
+            {ok, parse_blob_info(jsx:decode(JsonBin)), Rest};
+        [<<>>] ->
+            more;
+        [Bin] when is_binary(Bin) ->
+            more;
+        _ ->
+            {error, invalid_line}
+    end.
+
+enumerate_more(#enumerate_reader{client=Client, buffer=Buffer}=Reader) ->
+    case hackney:stream_body(Client) of
+        {ok, Data, Client1} ->
+            NewBuffer = << Buffer/binary, Data/binary >>,
+            enumerate(Reader#enumerate_reader{client=Client1,
+                                              buffer=NewBuffer});
+        {done, Client1} ->
+            hackney:close(Client1),
+            done;
+        Error ->
+            Error
+    end.
