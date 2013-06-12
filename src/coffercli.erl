@@ -14,7 +14,9 @@
          storage/2,
          upload/2, upload/3, send_blob_part/2,
          bulk_upload_init/1, bulk_upload_send/2, bulk_upload_final/1,
-         fetch_init/2, fetch/1, fetch_all/2,
+         bulk_upload_stop/1,
+         fetch_init/2, fetch/1, fetch_stop/1,
+         fetch_all/2,
          delete/2,
          enumerate_init/1, enumerate/1, enumerate_stop/1,
          enumerate_all/1,
@@ -346,6 +348,12 @@ bulk_upload_final(#mupload{client=Client}) ->
             Error
     end.
 
+%% @doc stop to upload a blob
+-spec bulk_upload_stop(NewUploadContext :: upload()) -> ok.
+bulk_upload_stop(#mupload{client=Client}) ->
+    hackney:close(Client),
+    ok.
+
 %% @doc initialize a stream to return a blob
 -spec fetch_init(Storage :: storage(), Blobref :: blobref())
     -> Fetcher :: fetcher() | {error, term()}.
@@ -376,6 +384,12 @@ fetch(Fetcher) ->
         Error ->
             Error
     end.
+
+%% @ doc stop fetching a blob
+-spec fetch_stop(Fetcher :: fetcher()) -> ok.
+fetch_stop(Fetcher) ->
+    hackney:close(Fetcher),
+    ok.
 
 %% @doc fetch all chunks from a Blob in memory
 -spec fetch_all(Storage :: storage(), BlobRef :: blobref()) ->
