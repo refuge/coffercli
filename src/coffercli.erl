@@ -155,11 +155,11 @@ ping(#coffer_conn{url=URL, options=Opts}) ->
 storages(#coffer_conn{state=closed}) ->
     {error, closed};
 storages(#coffer_conn{url=URL, options=Opts}) ->
-    URL1 = iolist_to_binary([URL, "/containers"]),
+    URL1 = iolist_to_binary([URL, "/storages"]),
     case coffercli_util:request(get, URL1, [200], Opts) of
          {ok, _, _, JsonBin} ->
             JsonObj = jsx:decode(JsonBin),
-            Containers = proplists:get_value(<<"containers">>, JsonObj),
+            Containers = proplists:get_value(<<"storages">>, JsonObj),
             {ok, Containers};
         Error ->
             Error
