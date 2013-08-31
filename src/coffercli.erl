@@ -30,8 +30,6 @@
 -record(enumerate_reader, {client,
                            buffer = <<>>}).
 
--compile([{parse_transform, hackney_transform}]).
-
 -type url() :: binary() | string().
 -export_type([url/0]).
 

@@ -10,6 +10,8 @@
 -export([validate_ref/1]).
 -export([hash/1]).
 
+-include("coffercli.hrl").
+
 -define(BLOCKSIZE, 32768).
 
 request(Method, Url, Expect, Options) ->
@@ -68,21 +70,21 @@ get_blob_regexp() ->
 hash({file, File}) ->
     case file:open(File, [binary,raw,read]) of
         {ok, P} ->
-            loop(P, crypto:sha_init());
+            loop(P, ?SHA_INIT());
         Error ->
             Error
     end;
 hash(Bin) when is_binary(Bin)->
-    Hash = hexdigest(crypto:sha(Bin)),
+    Hash = hexdigest(?SHA(Bin)),
     {ok, << "sha1-", Hash/binary >>}.
 
 loop (P, C) ->
     case file:read(P, ?BLOCKSIZE) of
         {ok, Bin} ->
-            loop(P, crypto:sha_update(C, Bin));
+            loop(P, ?SHA_UPDATE(C, Bin));
         eof ->
             file:close(P),
-            Hash = hexdigest(crypto:sha_final(C)),
+            Hash = hexdigest(?SHA_FINAL(C)),
             {ok, << "sha1-", Hash/binary >>};
         Error ->
             Error
